@@ -2291,13 +2291,28 @@
             `;
         }
 
-        function renderMobileNav() {
-            const items = [
-                { id: 'home', icon: 'fa-home' }, { id: 'explore', icon: 'fa-compass' },
-                { id: 'create', icon: 'fa-plus-circle', action: 'showCreatePostModal()' },
-                { id: 'notifications', icon: 'fa-bell' }, { id: 'messages', icon: 'fa-envelope' }
-            ];
-            return `
+        function renderMobileNav() function renderMobileNav() {
+    const items = [
+        { id: 'home', icon: 'fa-home' },
+        { id: 'explore', icon: 'fa-compass' },
+        { id: 'create', icon: 'fa-plus-circle', action: 'showCreatePostModal()' },
+        { id: 'notifications', icon: 'fa-bell' },
+        { id: 'messages', icon: 'fa-envelope' },
+        { id: 'profile', icon: 'fa-user' }  // ← ADD THIS
+    ];
+    return `
+        <nav class="mobile-nav">
+            ${items.map(item => `
+                <a href="#" class="mobile-nav-item ${state.currentPage === item.id ? 'active' : ''}" 
+                   onclick="${item.action || `navigateTo('${item.id}'); return false;`}">
+                    <i class="fas ${item.icon}"></i>
+                    <span>${t(item.id) || item.id}</span>
+                </a>
+            `).join('')}
+        </nav>
+    `;
+}
+
                 <nav class="mobile-nav">
                     ${items.map(item => `
                         <a href="#" class="mobile-nav-item ${state.currentPage === item.id ? 'active' : ''}" onclick="${item.action || `navigateTo('${item.id}'); return false;`}">
