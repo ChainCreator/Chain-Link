@@ -2976,6 +2976,28 @@
                     .subscribe();
             }
         }
+        }  // <-- Line 2978 (end of init function)
+
+        // ========== LIVE STREAMING FUNCTIONS ==========
+        const liveState = {
+            currentStream: null,
+            peerConnections: {},
+            localStream: null,
+            isStreaming: false,
+            currentStreamId: null
+        };
+        
+        async function startLiveStream() {
+            // ... all the live code I gave you ...
+        }
+        
+        // ... (all the other functions) ...
+
+        // Start the app  // <-- This is line 2980 in your file
+        document.addEventListener('DOMContentLoaded', init);  // <-- Line 2981
+    </script>
+</body>
+</html>
 
         // Start the app
         document.addEventListener('DOMContentLoaded', init);
