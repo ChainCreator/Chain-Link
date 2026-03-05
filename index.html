@@ -2976,7 +2976,8 @@
                     .subscribe();
             }
         }
-        }  // <-- Line 2978 (end of init function)
+                // Start the app
+        document.addEventListener('DOMContentLoaded', init);
 
         // ========== LIVE STREAMING FUNCTIONS ==========
         const liveState = {
@@ -2986,22 +2987,329 @@
             isStreaming: false,
             currentStreamId: null
         };
-        
-        async function startLiveStream() {
-            // ... all the live code I gave you ...
+
+        async function startLiveStream(title, requiresSubscription = false) {
+            if (!state.currentUser) {
+                showToast('Please sign in to go live', 'error');
+                return;
+            }
+            
+            try {
+                // Get camera only (no gallery) as per your requirement
+                liveState.localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" }, // Back camera preference
+                    audio: true 
+                });
+                
+                // Create stream record in database
+                const { data, error } = await supabase
+                    .from('live_streams')
+                    .insert({
+                        user_id: state.currentUser.id,
+                        title: title || 'Live Stream',
+                        status: 'live',
+                        started_at: new Date().toISOString(),
+                        is_camera_only: true,
+                        requires_subscription: requiresSubscription
+                    })
+                    .select()
+                    .single();
+                
+                if (error) throw error;
+                
+                liveState.currentStreamId = data.id;
+                liveState.isStreaming = true;
+                
+                // Show live UI
+                showLiveStreamerUI(data.stream_key);
+                showToast('You are now LIVE!', 'success');
+                
+                // Setup WebRTC for viewers (simplified - you'd need a signaling server for production)
+                setupLiveStreamingListeners(data.id);
+                
+            } catch (error) {
+                console.error('Start live error:', error);
+                showToast('Failed to start live stream: ' + error.message, 'error');
+            }
         }
-        
-        // ... (all the other functions) ...
 
-        // Start the app  // <-- This is line 2980 in your file
-        document.addEventListener('DOMContentLoaded', init);  // <-- Line 2981
+        async function endLiveStream() {
+            if (!liveState.currentStreamId) return;
+            
+            try {
+                // Stop all tracks
+                if (liveState.localStream) {
+                    liveState.localStream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Update database
+                await supabase
+                    .from('live_streams')
+                    .update({ 
+                        status: 'ended', 
+                        ended_at: new Date().toISOString(),
+                        duration_seconds: Math.floor((Date.now() - liveState.startTime) / 1000)
+                    })
+                    .eq('id', liveState.currentStreamId);
+                
+                liveState.isStreaming = false;
+                liveState.currentStreamId = null;
+                liveState.localStream = null;
+                
+                hideLiveStreamerUI();
+                showToast('Stream ended', 'success');
+                renderApp();
+                
+            } catch (error) {
+                console.error('End live error:', error);
+                showToast('Error ending stream', 'error');
+            }
+        }
+
+        function showLiveStreamerUI(streamKey) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay active';
+            modal.id = 'liveStreamerModal';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 90vw; width: 600px;">
+                    <div class="modal-header" style="background: var(--accent-red);">
+                        <h3 class="modal-title" style="display: flex; align-items: center; gap: 8px;">
+                            <span class="animate-pulse">🔴</span> LIVE NOW
+                        </h3>
+                        <button class="modal-close" onclick="endLiveStream()" style="color: #fff;">×</button>
+                    </div>
+                    <div class="modal-body" style="padding: 0; background: #000;">
+                        <video id="livePreview" autoplay muted playsinline style="width: 100%; max-height: 400px; display: block;"></video>
+                        <div style="padding: 16px; background: var(--bg-card);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                                <span style="color: var(--text-muted); font-size: 0.875rem;">Stream Key:</span>
+                                <span style="font-family: monospace; background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;">${streamKey}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 0.875rem;">
+                                <i class="fas fa-users"></i>
+                                <span id="liveViewerCount">0 viewers</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="border-top: none;">
+                        <button class="btn btn-danger w-full" onclick="endLiveStream()">
+                            <i class="fas fa-stop-circle"></i> End Stream
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Attach stream to video element
+            const video = document.getElementById('livePreview');
+            if (video && liveState.localStream) {
+                video.srcObject = liveState.localStream;
+            }
+            
+            liveState.startTime = Date.now();
+            
+            // Update viewer count every 5 seconds
+            liveState.viewerInterval = setInterval(async () => {
+                if (!liveState.currentStreamId) return;
+                const { data } = await supabase
+                    .from('live_streams')
+                    .select('viewer_count')
+                    .eq('id', liveState.currentStreamId)
+                    .single();
+                if (data) {
+                    document.getElementById('liveViewerCount').textContent = `${data.viewer_count} viewers`;
+                }
+            }, 5000);
+        }
+
+        function hideLiveStreamerUI() {
+            const modal = document.getElementById('liveStreamerModal');
+            if (modal) modal.remove();
+            if (liveState.viewerInterval) clearInterval(liveState.viewerInterval);
+        }
+
+        function setupLiveStreamingListeners(streamId) {
+            // Listen for new viewers
+            supabase.channel(`stream-${streamId}`)
+                .on('postgres_changes', { 
+                    event: 'INSERT', 
+                    schema: 'public', 
+                    table: 'live_viewers',
+                    filter: `stream_id=eq.${streamId}`
+                }, () => {
+                    console.log('New viewer joined');
+                })
+                .subscribe();
+        }
+
+        async function viewLiveStream(streamId) {
+            try {
+                const { data: stream, error } = await supabase
+                    .from('live_streams')
+                    .select(`*, profiles:user_id (id, username, display_name, avatar_url)`)
+                    .eq('id', streamId)
+                    .eq('status', 'live')
+                    .single();
+                
+                if (error || !stream) {
+                    showToast('Stream not found or ended', 'error');
+                    return;
+                }
+                
+                // Check subscription if required
+                if (stream.requires_subscription) {
+                    const isSubscribed = await checkSubscription(stream.user_id);
+                    if (!isSubscribed) {
+                        showSubscriptionModal(stream.user_id);
+                        return;
+                    }
+                }
+                
+                showLiveViewerUI(stream);
+                
+            } catch (error) {
+                console.error('View live error:', error);
+                showToast('Error loading stream', 'error');
+            }
+        }
+
+        function showLiveViewerUI(stream) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay active';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 90vw; width: 600px;">
+                    <div class="modal-header">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <img src="${stream.profiles?.avatar_url || 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + stream.user_id}" alt="" class="avatar avatar-sm">
+                            <div>
+                                <h3 class="modal-title" style="font-size: 1rem;">${stream.profiles?.display_name || stream.profiles?.username}</h3>
+                                <span style="font-size: 0.75rem; color: var(--text-muted);">${stream.title}</span>
+                            </div>
+                        </div>
+                        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
+                    </div>
+                    <div class="modal-body" style="padding: 0; background: #000;">
+                        <div style="aspect-ratio: 9/16; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; color: var(--text-muted);">
+                            <i class="fas fa-video" style="font-size: 3rem;"></i>
+                            <p style="position: absolute; bottom: 20px; font-size: 0.875rem;">Live video would play here (WebRTC)</p>
+                        </div>
+                    </div>
+                    <div class="modal-footer" style="flex-direction: column; gap: 12px;">
+                        <div class="chat-input" style="width: 100%;">
+                            <input type="text" placeholder="Say something..." id="liveChatInput" onkeydown="if(event.key==='Enter')sendLiveChat('${stream.id}', this.value)">
+                            <button class="chat-send-btn" onclick="sendLiveChat('${stream.id}', document.getElementById('liveChatInput').value)">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--text-muted);">
+                            <i class="fas fa-eye"></i> ${stream.viewer_count} watching
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Join as viewer
+            joinAsViewer(streamId);
+        }
+
+        async function joinAsViewer(streamId) {
+            try {
+                await supabase.from('live_viewers').insert({
+                    stream_id: streamId,
+                    viewer_id: state.currentUser?.id || null,
+                    viewer_session: state.currentUser ? null : crypto.randomUUID()
+                });
+            } catch (error) {
+                console.error('Join viewer error:', error);
+            }
+        }
+
+        async function sendLiveChat(streamId, message) {
+            if (!message.trim()) return;
+            if (!state.currentUser) {
+                showToast('Please sign in to chat', 'error');
+                return;
+            }
+            
+            try {
+                await supabase.from('live_chat').insert({
+                    stream_id: streamId,
+                    user_id: state.currentUser.id,
+                    message: message.trim()
+                });
+                document.getElementById('liveChatInput').value = '';
+            } catch (error) {
+                showToast('Failed to send message', 'error');
+            }
+        }
+
+        async function checkSubscription(creatorId) {
+            if (!state.currentUser) return false;
+            const { data } = await supabase
+                .from('subscriptions')
+                .select('*')
+                .eq('subscriber_id', state.currentUser.id)
+                .eq('creator_id', creatorId)
+                .eq('status', 'active')
+                .single();
+            return !!data;
+        }
+
+        function showSubscriptionModal(creatorId) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay active';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Subscribe to View</h3>
+                        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
+                    </div>
+                    <div class="modal-body" style="text-align: center; padding: 32px;">
+                        <i class="fas fa-crown" style="font-size: 3rem; color: var(--gold-primary); margin-bottom: 16px;"></i>
+                        <p style="margin-bottom: 24px;">This creator's live stream requires a subscription.</p>
+                        <div id="paypal-button-container" style="margin-bottom: 16px;"></div>
+                        <p style="font-size: 0.75rem; color: var(--text-muted);">Cancel anytime. Secure payment via PayPal.</p>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Initialize PayPal button
+            if (window.paypal) {
+                paypal.Buttons({
+                    style: { shape: 'pill', color: 'gold', layout: 'vertical' },
+                    createSubscription: function(data, actions) {
+                        return actions.subscription.create({
+                            'plan_id': 'YOUR_PLAN_ID' // You need to create this in PayPal Developer
+                        });
+                    },
+                    onApprove: function(data, actions) {
+                        saveSubscription(creatorId, data.subscriptionID);
+                        modal.remove();
+                        showToast('Subscription successful!', 'success');
+                    }
+                }).render('#paypal-button-container');
+            }
+        }
+
+        async function saveSubscription(creatorId, paypalSubscriptionId) {
+            try {
+                await supabase.from('subscriptions').insert({
+                    subscriber_id: state.currentUser.id,
+                    creator_id: creatorId,
+                    paypal_subscription_id: paypalSubscriptionId,
+                    status: 'active',
+                    tier: 'premium',
+                    amount: 4.99,
+                    currency: 'USD'
+                });
+            } catch (error) {
+                console.error('Save subscription error:', error);
+            }
+        }
     </script>
 </body>
 </html>
 
-        // Start the app
-        document.addEventListener('DOMContentLoaded', init);
-    </script>
-</body>
-</html>
 
